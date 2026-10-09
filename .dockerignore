@@ -1,0 +1,8 @@
+node_modules
+data
+.git
+.github
+test
+*.db
+*.db-wal
+*.db-shm

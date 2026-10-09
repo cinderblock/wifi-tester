@@ -1,0 +1,116 @@
+name: Build image
+
+# Push to master → test, build the image and push it to GHCR. That is the whole
+# job: this repo publishes a *candidate*, it does not deploy.
+#
+# Which image runs is pinned in the ops repo (cinderblock/ops):
+#   steamboat (http://wifi.tsl)  servers/steamboat/stacks/wifi-tsl/pin.json
+#
+# Shipping a build is two steps: push here, then paste the pin printed in this
+# run's summary into that pin.json and push ops. This repo has no runner and no
+# access to any host.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ${{ github.repository }}
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+
+      - run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Format
+        run: bun run format:check
+
+      - name: Test
+        run: bun test
+
+      # The diagnostic script must parse under the shells it will meet:
+      # dash (Debian/Ubuntu /bin/sh) and bash (macOS /bin/sh is bash 3.2 in
+      # POSIX mode). A syntax error here would only show on someone's laptop.
+      - name: Shell syntax
+        run: |
+          sudo apt-get install -y --no-install-recommends dash shellcheck >/dev/null
+          dash -n scripts/wifi-check.sh
+          bash -n scripts/wifi-check.sh
+          shellcheck --shell=sh --severity=warning scripts/wifi-check.sh
+
+  build-and-push:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE }}:latest
+          # ops verifies this label against the commit its pin claims, so a
+          # hand-edited pin.json can't quietly ship a different build than the
+          # one that was reviewed. Required: the deploy fails without it.
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarize how to deploy this build
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```json'
+            echo '{'
+            echo '  "image": "${{ env.REGISTRY }}/${{ env.IMAGE }}",'
+            echo '  "digest": "${{ steps.push.outputs.digest }}",'
+            echo '  "source": {'
+            echo '    "repo": "${{ github.repository }}",'
+            echo '    "commit": "${{ github.sha }}"'
+            echo '  }'
+            echo '}'
+            echo '```'
+            echo
+            echo 'Paste into `servers/steamboat/stacks/wifi-tsl/pin.json` in cinderblock/ops and push.'
+            echo 'Nothing reaches the host until you do.'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,11 @@
+* text=auto
+
+# Shell scripts run on macOS/Linux and must keep LF even in a Windows checkout.
+# (The server normalizes line endings when it serves them too; this keeps the
+# files runnable straight from a checkout, e.g. under WSL.)
+*.sh text eol=lf
+Dockerfile text eol=lf
+
+# Batch files need CRLF: cmd.exe mis-parses labels and blocks with bare LF.
+*.cmd text eol=crlf
+*.bat text eol=crlf

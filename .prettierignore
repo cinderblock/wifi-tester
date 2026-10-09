@@ -1,0 +1,4 @@
+data/
+bun.lock
+# Templates whose exact bytes matter; prettier has no PowerShell/sh support anyway.
+scripts/

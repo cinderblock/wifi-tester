@@ -1,0 +1,20 @@
+{
+  "name": "wifi-tester",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LAN wifi tester: browser speed test, read-only client diagnostics, and UniFi-enriched reports for agents",
+  "scripts": {
+    "dev": "bun --watch src/main.ts",
+    "start": "bun src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3"
+  }
+}

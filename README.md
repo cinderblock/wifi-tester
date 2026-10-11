@@ -117,8 +117,13 @@ missing one fails at boot.
 | `UNIFI_HOST`       | `https://unifi.example.com`              | Controller base URL                                      |
 | `UNIFI_SITE`       | `default`                                | Site internal reference                                  |
 | `UNIFI_API_KEY`    | (secret)                                 | Use a key from a **View Only** admin; the app only reads |
-| `LIBRESPEED_URL`   | `https://speedtest.example.com` or empty | Extra internet target; must be set, empty to disable     |
+| `LIBRESPEED_URL`   | `https://speedtest.example.com` or empty | Extra internet target; must be set, empty to disable¹    |
 | `KNOWN_SSIDS`      | `Office,Office IoT`                      | Must be set, empty to skip the SSID check                |
+
+¹ The browser calls `<LIBRESPEED_URL>/garbage`, `/empty` (with `?cors`), so
+the server must answer LibreSpeed's endpoints by their bare names:
+[caddy-librespeed](https://github.com/cinderblock/caddy-librespeed) or
+LibreSpeed's Go backend. The PHP backend only answers `backend/*.php`.
 
 The UniFi calls are `GET stat/sta`, `GET stat/device`, and
 `POST v2/…/system-log/all` (a query whose body is only a time window). Nothing

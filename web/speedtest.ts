@@ -72,12 +72,13 @@ function endpoints(t: Target) {
         streams: 6,
       };
     case 'librespeed':
+      // caddy-librespeed answers LibreSpeed's endpoints by their bare names at
+      // any prefix; the PHP backend's backend/*.php paths work there too.
       return {
-        ping: () => `${t.base}/backend/empty.php?cors=true&r=${r()}`,
-        // garbage.php sends ckSize MiB.
-        down: (bytes: number) =>
-          `${t.base}/backend/garbage.php?cors=true&ckSize=${Math.ceil(bytes / 1048576)}&r=${r()}`,
-        up: () => `${t.base}/backend/empty.php?cors=true&r=${r()}`,
+        ping: () => `${t.base}/empty?cors&r=${r()}`,
+        // garbage sends ckSize MiB.
+        down: (bytes: number) => `${t.base}/garbage?cors&ckSize=${Math.ceil(bytes / 1048576)}&r=${r()}`,
+        up: () => `${t.base}/empty?cors&r=${r()}`,
         chunk: 25 * 1024 * 1024,
         upChunk: 8 * 1024 * 1024,
         streams: 6,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { findClient, renderEvent, Unifi } from '../src/unifi.ts';
-import { AP_MAC, clients, events, fakeController, LAPTOP_MAC } from './helpers.ts';
+import { findClient, renderEvent, ssidBands, Unifi } from '../src/unifi.ts';
+import { AP_MAC, clients, devices, events, fakeController, LAPTOP_MAC } from './helpers.ts';
 
 const cfg = { host: 'https://unifi.test', site: 'default', apiKey: 'k' };
 
@@ -20,6 +20,13 @@ describe('findClient', () => {
   test('no match', () => {
     expect(findClient(clients, ['02:00:00:00:99:99'], '10.9.9.9')).toBeNull();
   });
+});
+
+test('ssidBands: bands on air per SSID, online APs only, in band order', () => {
+  expect(ssidBands(devices)).toEqual([
+    { ssid: 'Office', bands: ['2.4 GHz', '5 GHz', '6 GHz'], aps: 1 },
+    { ssid: 'Office Legacy', bands: ['2.4 GHz', '5 GHz'], aps: 1 },
+  ]);
 });
 
 test('renderEvent fills in parameter names', () => {

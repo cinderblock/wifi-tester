@@ -44,7 +44,7 @@ Options are environment variables, because `irm | iex` can't pass parameters:
 | ------------------------------------------- | :-----: | :---------: |
 | Wi-Fi connected, SSID is one of ours        |    ✓    |      ✓      |
 | Signal (dBm), band, negotiated rate         |    ✓    |      ✓      |
-| 2.4 GHz while the adapter supports 5 GHz    |    ✓    |      ✓      |
+| Best band available (2.4 / 5 / 6 GHz)²      |    ✓    |     ✓³      |
 | A stronger AP for the same SSID nearby      |   ✓¹    |             |
 | Random hardware address, driver age         |    ✓    |             |
 | IP address / DHCP failure (169.254.x.x)     |    ✓    |      ✓      |
@@ -58,6 +58,18 @@ Options are environment variables, because `irm | iex` can't pass parameters:
 | Clock skew                                  |    ✓    |      ✓      |
 
 ¹ Needs Location turned on in Windows 11 24H2 and later, otherwise it is skipped.
+
+² The script compares the bands the adapter supports with the bands this SSID
+is actually broadcast in, which it gets from `GET /api/network/ssids.txt` (UniFi's
+live VAP table). It flags 2.4 GHz when 5 or 6 GHz would work, notes 5 GHz when
+6 GHz would work, and suggests a sibling SSID when this one isn't on 6 GHz but
+the adapter is. Without the network's list it never claims 6 GHz. The rules
+exist once per script, in a marked pure `band-verdict` region, and
+`test/band.test.ts` runs both versions against the same cases.
+
+³ The adapter's bands come from `iw list` on Linux (not `nmcli`-only systems) and
+`system_profiler`'s supported channels on macOS. On Windows they come from
+`netsh wlan show drivers` (Windows 11 lists them).
 
 It also attaches raw output for the network team: `ipconfig /all`,
 `netsh wlan show …`, `route print` on Windows; `ip`, `iw`/`nmcli`, `resolvectl`
@@ -84,6 +96,9 @@ curl -s -X PATCH -H "Authorization: Bearer $WIFI_AGENT_TOKEN" -H 'Content-Type: 
 
 # AP radios: channel, utilization, clients, retries
 curl -s -H "Authorization: Bearer $WIFI_AGENT_TOKEN" http://wifi.tsl/api/unifi/aps
+
+# Which bands each SSID is on air in (public; SSIDs are broadcast anyway)
+curl -s http://wifi.tsl/api/network/ssids
 ```
 
 ## Configuration

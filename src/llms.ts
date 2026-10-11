@@ -63,6 +63,12 @@ status: new → ack (looking) → resolved | ignored. Notes append, never replac
 Every AP with per-radio channel, width, utilization (cu_total), self rx/tx
 share, client count, satisfaction, retries.
 
+    curl -s "${base}/api/network/ssids"
+
+Which bands (2.4 / 5 / 6 GHz) each SSID is actually on air in, from online
+APs. 6 GHz needs WPA3, so an SSID kept on WPA2 for old devices won't be there.
+A report's wifi.band check compares this with what the adapter supports.
+
 ## Reading the signals
 
 - signal ≥ -65 dBm good, -65..-75 marginal, below -75 poor.

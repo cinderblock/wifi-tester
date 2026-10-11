@@ -302,6 +302,26 @@ export function createApp(deps: AppDeps) {
     '/api/ping': speed.ping,
     '/api/download': (req: Request) => speed.download(new URL(req.url)),
     '/api/upload': { POST: speed.upload },
+    // Which bands each SSID is on air in. Public: SSIDs are broadcast anyway.
+    // The scripts use the .txt form ("<bands>\t<ssid>" per line) to tell a
+    // device on 5 GHz that this network also offers 6 GHz; sh has no JSON parser.
+    '/api/network/ssids': async () => {
+      if (!unifi) return error(503, 'UniFi lookup is disabled on this instance (UNIFI_ENABLED=false)');
+      try {
+        return json({ ssids: await unifi.ssids() });
+      } catch (e) {
+        return error(502, `network controller: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    '/api/network/ssids.txt': async () => {
+      if (!unifi) return error(503, 'UniFi lookup is disabled on this instance (UNIFI_ENABLED=false)');
+      try {
+        const lines = (await unifi.ssids()).map((s) => `${s.bands.join(',')}\t${s.ssid}\n`);
+        return text(lines.join(''), 'text/plain; charset=utf-8');
+      } catch (e) {
+        return error(502, `network controller: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
     '/api/whoami': async (req: Request, server: Server<undefined>) => {
       const ip = clientIp(req, server);
       return json({ ip, unifi: unifi ? await unifi.snapshot({ macs: [], ip }) : null });

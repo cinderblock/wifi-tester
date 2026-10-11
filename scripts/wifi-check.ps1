@@ -296,6 +296,73 @@ $drv = (ConvertFrom-NetshBlocks $wlanDrv) | Select-Object -First 1
 $radioTypes = if ($drv) { [string]$drv['Radio types supported'] } else { '' }
 $supports5 = $radioTypes -match '802\.11(a|ac|ax|be)\b'
 
+# region band-verdict -------------------------------------------------------
+# Pure: no I/O, no script state. test/band.test.ts extracts this region and
+# runs it on its own, against the same cases as the sh version.
+# Bands as ranks: 1 = 2.4 GHz, 2 = 5 GHz, 3 = 6 GHz.
+function Get-BandRank([string]$b) {
+    if ($b -match '^\s*2\.4') { return 1 }
+    if ($b -match '^\s*5') { return 2 }
+    if ($b -match '^\s*6') { return 3 }
+    return $null
+}
+function Get-BandName([int]$r) { return @{ 1 = '2.4 GHz'; 2 = '5 GHz'; 3 = '6 GHz' }[$r] }
+# $SsidBands: @{ ssid = @('2.4 GHz', '5 GHz', ...) } from the controller, or
+# $null when unknown. Returns @{ status; detail; advice } or $null.
+function Get-BandVerdict([string]$Current, [string[]]$DeviceBands, $SsidBands, [string]$Ssid, [string[]]$KnownSsids) {
+    $cur = Get-BandRank $Current
+    if (-not $cur) { return $null }
+    $dev = @($DeviceBands | ForEach-Object { Get-BandRank $_ } | Where-Object { $_ })
+    # Whatever it's on, it can do, whatever the driver listed.
+    $devMax = (@($dev) + @($cur) | Measure-Object -Maximum).Maximum
+    $net = $null
+    if ($SsidBands -and $SsidBands.ContainsKey($Ssid)) { $net = @($SsidBands[$Ssid] | ForEach-Object { Get-BandRank $_ }) }
+    # Best band both ends can do. Without the network's list, never claim
+    # 6 GHz: plenty of networks (and some of ours) don't broadcast it.
+    if ($net) { $best = (@($dev | Where-Object { $net -contains $_ }) + @($cur) | Measure-Object -Maximum).Maximum }
+    else { $best = [math]::Max($cur, [math]::Min($devMax, 2)) }
+    $other6 = $null
+    if ($devMax -ge 3 -and $net -and -not ($net -contains 3)) {
+        $other6 = $KnownSsids | Where-Object { $SsidBands.ContainsKey($_) -and (@($SsidBands[$_]) -contains '6 GHz') } | Select-Object -First 1
+    }
+    if ($cur -eq 1 -and $best -gt 1) {
+        return @{ status = 'warn'; detail = "on 2.4 GHz, though this computer and this network both do $(Get-BandName $best)"; advice = '2.4 GHz is slower and very crowded here. Turning Wi-Fi off and on often moves it up; the network team can look at band steering.' }
+    }
+    if ($cur -eq 2 -and $best -eq 3) {
+        return @{ status = 'info'; detail = 'on 5 GHz; this computer and this network also do 6 GHz, which is usually far less crowded'; advice = '6 GHz reaches less far than 5 GHz. Near an access point, turning Wi-Fi off and on may move it to 6 GHz.' }
+    }
+    if ($other6) {
+        return @{ status = 'info'; detail = "this computer supports 6 GHz, but `"$Ssid`" isn't broadcast there; `"$other6`" is"; advice = "Joining `"$other6`" would let it use 6 GHz, which is usually far less crowded." }
+    }
+    if ($cur -eq 1 -and $devMax -le 1) {
+        return @{ status = 'info'; detail = 'on 2.4 GHz, the only band this adapter supports'; advice = 'A newer USB Wi-Fi adapter with 5 or 6 GHz would be much faster.' }
+    }
+    return @{ status = 'ok'; detail = $Current; advice = $null }
+}
+# endregion band-verdict -----------------------------------------------------
+
+# Windows 11 lists the adapter's bands under "Number of supported bands"
+# ("2.4 GHz [ 0 MHz - 0 MHz]" ...). Older builds don't; fall back to the radio
+# types, which can show 5 GHz but never 6.
+$devBands = @([regex]::Matches($wlanDrv, '(?m)^\s+(2\.4|5|6) GHz \[') | ForEach-Object { "$($_.Groups[1].Value) GHz" } | Select-Object -Unique)
+$devBandsKnown = $devBands.Count -gt 0
+if (-not $devBandsKnown) { $devBands = @('2.4 GHz'); if ($supports5) { $devBands += '5 GHz' } }
+
+# Which bands each SSID is on air in, from the network controller via this
+# site ("<bands>\t<ssid>" per line). Unavailable just means we don't know.
+$ssidBands = $null
+$ssidBandsError = $null
+try {
+    $r = Invoke-Http "$BaseUrl/api/network/ssids.txt" -Direct -TimeoutMs 5000
+    if ($r.Status -eq 200) {
+        $ssidBands = @{}
+        foreach ($line in ($r.Text -split "`n")) {
+            $parts = $line.TrimEnd("`r").Split("`t", 2)
+            if ($parts.Count -eq 2) { $ssidBands[$parts[1]] = @($parts[0].Split(',')) }
+        }
+    } else { $ssidBandsError = "HTTP $($r.Status): $($r.Text)" }
+} catch { $ssidBandsError = $_.Exception.Message }
+
 # Which adapter carries traffic: the one with the lowest-metric default route.
 $primary = $null
 try {
@@ -315,7 +382,8 @@ Invoke-Check 'wifi.connected' 'Wi-Fi connection' {
     } elseif (-not $wifi) {
         Add-Check 'wifi.connected' 'Wi-Fi connection' 'info' 'no Wi-Fi adapter found'
     } elseif ($wifi.state -ne 'connected') {
-        $wired = $interfaces | Where-Object { $_.type -notmatch '802\.11' -and $_.gateway.Count } | Select-Object -First 1
+        # Name the adapter that actually carries traffic, not just any wired one.
+        $wired = if ($primary -and $primary.type -notmatch '802\.11') { $primary } else { $null }
         if ($wired) { Add-Check 'wifi.connected' 'Wi-Fi connection' 'info' "Wi-Fi is $($wifi.state); using $($wired.name)" }
         else { Add-Check 'wifi.connected' 'Wi-Fi connection' 'fail' "Wi-Fi is $($wifi.state)" 'Click the network icon in the taskbar and connect to the Wi-Fi network.' }
     } else {
@@ -345,13 +413,14 @@ if ($onWifi) {
     }
 
     Invoke-Check 'wifi.band' 'Wi-Fi band' {
-        if ([string]$wifi.band -match '2\.4' -and $supports5) {
-            Add-Check 'wifi.band' 'Wi-Fi band' 'warn' "on 2.4 GHz, though this computer supports 5 GHz ($radioTypes)" '2.4 GHz is slower and very crowded here. Turning Wi-Fi off and on often lands on 5 GHz; the network team can look at band steering.'
-        } elseif ([string]$wifi.band -match '2\.4') {
-            Add-Check 'wifi.band' 'Wi-Fi band' 'info' "on 2.4 GHz; this adapter only supports $radioTypes" 'A newer USB Wi-Fi adapter with 5 GHz would be much faster.'
-        } elseif ($wifi.band) {
-            Add-Check 'wifi.band' 'Wi-Fi band' 'ok' "$($wifi.band), $($wifi.radioType)"
-        }
+        $v = Get-BandVerdict $wifi.band $devBands $ssidBands $wifi.ssid $KnownSsids
+        if (-not $v) { return }
+        $data = [ordered]@{ current = $wifi.band; deviceBands = @($devBands); deviceBandsFromDriver = $devBandsKnown }
+        if ($ssidBands -and $ssidBands.ContainsKey($wifi.ssid)) { $data.networkBands = @($ssidBands[$wifi.ssid]) }
+        if ($ssidBandsError) { $data.networkBandsError = $ssidBandsError }
+        $detail = $v.detail
+        if ($v.status -eq 'ok') { $detail = "$($wifi.band), $($wifi.radioType)" }
+        Add-Check 'wifi.band' 'Wi-Fi band' $v.status $detail $v.advice $data
     }
 
     Invoke-Check 'wifi.rate' 'Wi-Fi link rate' {

@@ -189,9 +189,19 @@ describe('reports', () => {
 
   test('UniFi AP overview for agents', async () => {
     const body = await (await fetch(`${base}/api/unifi/aps`, { headers: agent })).json();
-    expect(body.aps).toHaveLength(1);
+    expect(body.aps.map((a: { name: string; online: boolean }) => [a.name, a.online])).toEqual([
+      ['AP West', true],
+      ['AP Dead', false],
+    ]);
     expect(body.aps[0].radios[0]).toMatchObject({ band: '2.4 GHz', utilizationPct: 73 });
   });
+});
+
+test('SSID bands, as JSON and as the scripts read them', async () => {
+  const j = await (await fetch(`${base}/api/network/ssids`)).json();
+  expect(j.ssids[0]).toEqual({ ssid: 'Office', bands: ['2.4 GHz', '5 GHz', '6 GHz'], aps: 1 });
+  const t = await (await fetch(`${base}/api/network/ssids.txt`)).text();
+  expect(t).toBe('2.4 GHz,5 GHz,6 GHz\tOffice\n2.4 GHz,5 GHz\tOffice Legacy\n');
 });
 
 test('whoami finds the caller by IP', async () => {

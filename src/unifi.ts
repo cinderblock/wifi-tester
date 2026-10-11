@@ -76,6 +76,40 @@ export interface RawDevice {
   num_sta?: number;
   satisfaction?: number;
   radio_table_stats?: RawRadioStats[];
+  /** One entry per SSID per radio this AP is broadcasting. */
+  vap_table?: { essid?: string; radio?: string; up?: boolean }[];
+}
+
+/** Which bands each SSID is actually on air in, across all online APs. */
+export interface SsidBands {
+  ssid: string;
+  /** Ascending: "2.4 GHz", "5 GHz", "6 GHz". */
+  bands: string[];
+  /** How many APs broadcast it on at least one band. */
+  aps: number;
+}
+
+const BAND_ORDER = ['ng', 'na', '6e'];
+
+export function ssidBands(devices: RawDevice[]): SsidBands[] {
+  const by = new Map<string, { radios: Set<string>; aps: Set<string> }>();
+  for (const d of devices) {
+    if (d.type !== 'uap' || d.state !== 1) continue;
+    for (const v of d.vap_table ?? []) {
+      if (!v.essid || !v.radio || v.up === false) continue;
+      const e = by.get(v.essid) ?? { radios: new Set(), aps: new Set() };
+      e.radios.add(v.radio);
+      e.aps.add(d.mac);
+      by.set(v.essid, e);
+    }
+  }
+  return [...by]
+    .map(([ssid, e]) => ({
+      ssid,
+      bands: [...e.radios].sort((a, b) => BAND_ORDER.indexOf(a) - BAND_ORDER.indexOf(b)).map((r) => bandName(r) ?? r),
+      aps: e.aps.size,
+    }))
+    .sort((a, b) => a.ssid.localeCompare(b.ssid));
 }
 
 export interface RawEvent {
@@ -358,6 +392,10 @@ export class Unifi {
 
   devices(): Promise<RawDevice[]> {
     return this.cached('device', 30_000, () => this.legacy<RawDevice>('stat/device'));
+  }
+
+  async ssids(): Promise<SsidBands[]> {
+    return ssidBands(await this.devices());
   }
 
   async aps(): Promise<ApView[]> {

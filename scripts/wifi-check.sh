@@ -179,7 +179,7 @@ mbps() { awk -v b="$1" -v t="$2" 'BEGIN { if (t > 0) printf "%.1f", b * 8 / t / 
 gather_basics() {
 	HOSTNAME_=$(hostname 2>/dev/null || uname -n)
 	GATEWAY='' PRIMARY_IF='' WIFI_IF='' IPV4='' MAC='' DNS='' DHCP=false
-	WIFI_STATE='' SSID='' BSSID='' CHANNEL='' BAND='' RSSI='' NOISE='' TXRATE='' RXRATE='' PHY='' SUPPORTED_PHY='' WIFI_MAC=''
+	WIFI_STATE='' SSID='' BSSID='' CHANNEL='' BAND='' RSSI='' NOISE='' TXRATE='' RXRATE='' PHY='' SUPPORTED_PHY='' DEV_BANDS='' WIFI_MAC=''
 
 	if [ "$PLATFORM" = macos ]; then
 		OS="macOS $(sw_vers -productVersion 2>/dev/null) ($(sw_vers -buildVersion 2>/dev/null))"
@@ -205,6 +205,8 @@ gather_basics() {
 				function q(s) { gsub(/'\''/, "'\''\\'\'''\''", s); return "'\''" s "'\''" }
 				/Status:/ && !st { sub(/.*Status: */, ""); print "WIFI_STATE=" q($0); st = 1 }
 				/Supported PHY Modes:/ { sub(/.*Supported PHY Modes: */, ""); print "SUPPORTED_PHY=" q($0) }
+				# e.g. "1 (2GHz), 2 (2GHz), ... 36 (5GHz), ... 1 (6GHz), ..." on a 6E Mac.
+				/Supported Channels:/ { b = ""; if ($0 ~ /2GHz/) b = b " 1"; if ($0 ~ /5GHz/) b = b " 2"; if ($0 ~ /6GHz/) b = b " 3"; print "DEV_BANDS=" q(b) }
 				/Current Network Information:/ { cur = 1; getline; s = $0; sub(/^ */, "", s); sub(/:$/, "", s); print "SSID=" q(s); next }
 				/Other Local Wi-Fi Networks:/ { cur = 0 }
 				cur && /PHY Mode:/ { sub(/.*PHY Mode: */, ""); print "PHY=" q($0) }
@@ -251,7 +253,10 @@ gather_basics() {
 					WIFI_STATE=disconnected
 				fi
 				capture 'iw list (bands)' sh -c "iw list 2>/dev/null | grep -E '^[[:space:]]*Band [0-9]+:'" >"$TMP/iwlist"
-				grep -q 'Band 2:' "$TMP/iwlist" && SUPPORTED_PHY="5 GHz"
+				# nl80211 band numbers: 1 = 2.4 GHz, 2 = 5 GHz, 4 = 6 GHz.
+				grep -q 'Band 1:' "$TMP/iwlist" && DEV_BANDS="$DEV_BANDS 1"
+				grep -q 'Band 2:' "$TMP/iwlist" && DEV_BANDS="$DEV_BANDS 2"
+				grep -q 'Band 4:' "$TMP/iwlist" && DEV_BANDS="$DEV_BANDS 3"
 			elif have nmcli; then
 				capture 'nmcli dev wifi' nmcli -t -f ACTIVE,SSID,BSSID,CHAN,FREQ,RATE,SIGNAL dev wifi list --rescan no >"$TMP/nm"
 				line=$(grep '^yes:' "$TMP/nm" | head -n 1)
@@ -320,20 +325,99 @@ check_wifi() {
 		fi
 	fi
 
-	case "$BAND" in
-	2.4*)
-		case "$SUPPORTED_PHY" in
-		*ac* | *ax* | *be* | *5\ GHz* | */a/*) add_check wifi.band 'Wi-Fi band' warn "on 2.4 GHz, though this computer supports 5 GHz" '2.4 GHz is slower and very crowded here. Turning Wi-Fi off and on often lands on 5 GHz.' ;;
-		*) add_check wifi.band 'Wi-Fi band' info "on 2.4 GHz" ;;
-		esac ;;
-	?*) add_check wifi.band 'Wi-Fi band' ok "$BAND${PHY:+, $PHY}" ;;
-	esac
+	check_band
 
 	if [ -n "$TXRATE" ]; then
 		r=${TXRATE%%.*}
 		if [ "$r" -lt 20 ] 2>/dev/null; then add_check wifi.rate 'Wi-Fi link rate' warn "$TXRATE Mbps (negotiated, not measured)" 'A rate this low usually means weak signal or interference.'
 		else add_check wifi.rate 'Wi-Fi link rate' ok "$TXRATE Mbps (negotiated, not measured)"; fi
 	fi
+}
+
+# region band-verdict -------------------------------------------------------
+# Pure: reads only its arguments and the file it is given. test/band.test.ts
+# extracts this region and runs it on its own, against the same cases as the
+# PowerShell version.
+# Bands as ranks: 1 = 2.4 GHz, 2 = 5 GHz, 3 = 6 GHz.
+band_rank() { case "$1" in 2.4*) echo 1 ;; 5*) echo 2 ;; 6*) echo 3 ;; *) echo 0 ;; esac; }
+rank_name() { case "$1" in 1) echo '2.4 GHz' ;; 2) echo '5 GHz' ;; 3) echo '6 GHz' ;; esac; }
+
+# band_verdict CURRENT_BAND DEVICE_RANKS SSID SSIDS_FILE KNOWN_SSIDS
+#   DEVICE_RANKS: e.g. "1 2 3"; SSIDS_FILE: "<bands>\t<ssid>" lines, empty if
+#   unknown; KNOWN_SSIDS: newline-separated.
+# Prints "status<TAB>detail<TAB>advice", or nothing when the band is unknown.
+band_verdict() {
+	_cur=$(band_rank "$1")
+	[ "$_cur" -gt 0 ] || return 0
+	# Whatever it's on, it can do, whatever the driver listed.
+	_devmax=$_cur
+	for _r in $2; do [ "$_r" -gt "$_devmax" ] && _devmax=$_r; done
+	_net=$(awk -F '\t' -v s="$3" '$2 == s { print $1; exit }' "$4" 2>/dev/null)
+	# Best band both ends can do. Without the network's list, never claim
+	# 6 GHz: plenty of networks (and some of ours) don't broadcast it.
+	_best=$_cur
+	if [ -n "$_net" ]; then
+		for _r in $2; do
+			case ",$_net," in *",$(rank_name "$_r"),"*) [ "$_r" -gt "$_best" ] && _best=$_r ;; esac
+		done
+	else
+		_m=$_devmax
+		[ "$_m" -gt 2 ] && _m=2
+		[ "$_m" -gt "$_best" ] && _best=$_m
+	fi
+	_other6=''
+	if [ "$_devmax" -ge 3 ] && [ -n "$_net" ]; then
+		case ",$_net," in
+		*",6 GHz,"*) ;;
+		*) _other6=$(printf '%s
+' "$5" | while IFS= read -r _k; do
+			[ -n "$_k" ] && awk -F '\t' -v s="$_k" '$2 == s && $1 ~ /6 GHz/ { print s; exit }' "$4"
+		done | head -n 1) ;;
+		esac
+	fi
+	_t=$(printf '\t')
+	if [ "$_cur" -eq 1 ] && [ "$_best" -gt 1 ]; then
+		echo "warn${_t}on 2.4 GHz, though this computer and this network both do $(rank_name "$_best")${_t}2.4 GHz is slower and very crowded here. Turning Wi-Fi off and on often moves it up; the network team can look at band steering."
+	elif [ "$_cur" -eq 2 ] && [ "$_best" -eq 3 ]; then
+		echo "info${_t}on 5 GHz; this computer and this network also do 6 GHz, which is usually far less crowded${_t}6 GHz reaches less far than 5 GHz. Near an access point, turning Wi-Fi off and on may move it to 6 GHz."
+	elif [ -n "$_other6" ]; then
+		echo "info${_t}this computer supports 6 GHz, but \"$3\" isn't broadcast there; \"$_other6\" is${_t}Joining \"$_other6\" would let it use 6 GHz, which is usually far less crowded."
+	elif [ "$_cur" -eq 1 ] && [ "$_devmax" -le 1 ]; then
+		echo "info${_t}on 2.4 GHz, the only band this adapter supports${_t}A newer USB Wi-Fi adapter with 5 or 6 GHz would be much faster."
+	else
+		echo "ok${_t}$1${_t}"
+	fi
+}
+# endregion band-verdict -----------------------------------------------------
+
+check_band() {
+	[ "$(band_rank "$BAND")" -gt 0 ] || return 0
+	devbands=$DEV_BANDS
+	if [ -z "$devbands" ]; then
+		# Unknown adapter bands (e.g. nmcli only): infer 5 GHz from the PHY modes.
+		case "$SUPPORTED_PHY" in *ac* | *ax* | *be* | */a/*) devbands='1 2' ;; esac
+	fi
+	# Which bands each SSID is on air in, from the network controller via this
+	# site. Unavailable means unknown, and the report says why.
+	neterr=''
+	code=$(curl -s --noproxy '*' -A "$UA" --max-time 5 -o "$TMP/ssids" -w '%{http_code}' "$BASE_URL/api/network/ssids.txt" 2>/dev/null) || true
+	if [ "$code" != 200 ]; then
+		neterr="HTTP ${code:-000}"
+		: >"$TMP/ssids"
+	fi
+	net=$(awk -F '\t' -v s="$SSID" '$2 == s { print $1; exit }' "$TMP/ssids")
+
+	v=$(band_verdict "$BAND" "$devbands" "$SSID" "$TMP/ssids" "$KNOWN_SSIDS")
+	[ -n "$v" ] || return 0
+	st=$(printf '%s' "$v" | cut -f1)
+	detail=$(printf '%s' "$v" | cut -f2)
+	advice=$(printf '%s' "$v" | cut -f3)
+	[ "$st" = ok ] && detail="$BAND${PHY:+, $PHY}"
+
+	dl='' sep=''
+	for r in $devbands; do dl="$dl$sep$(json_str "$(rank_name "$r")")"; sep=','; done
+	data="{\"current\":$(json_str "$BAND"),\"deviceBands\":[$dl],\"networkBands\":$(json_str "$net")${neterr:+,\"networkBandsError\":$(json_str "$neterr")}}"
+	add_check wifi.band 'Wi-Fi band' "$st" "$detail" "$advice" "$data"
 }
 
 check_ip() {

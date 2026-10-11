@@ -62,6 +62,22 @@ export const devices: RawDevice[] = [
       { radio: 'ng', channel: 6, bw: 20, cu_total: 73, cu_self_rx: 10, cu_self_tx: 12, num_sta: 14 },
       { radio: 'na', channel: 44, bw: 80, cu_total: 21, num_sta: 9 },
     ],
+    vap_table: [
+      { essid: 'Office', radio: '6e', up: true },
+      { essid: 'Office', radio: 'ng', up: true },
+      { essid: 'Office', radio: 'na', up: true },
+      { essid: 'Office Legacy', radio: 'na', up: true },
+      { essid: 'Office Legacy', radio: 'ng', up: true },
+      { essid: 'Off Air', radio: 'na', up: false },
+    ],
+  },
+  {
+    // An offline AP's VAPs must not count.
+    mac: '02:00:00:00:a0:02',
+    name: 'AP Dead',
+    type: 'uap',
+    state: 0,
+    vap_table: [{ essid: 'Ghost', radio: 'na', up: true }],
   },
   { mac: '02:00:00:00:b0:01', name: 'Switch 1', type: 'usw', state: 1 },
 ];

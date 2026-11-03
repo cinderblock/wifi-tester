@@ -7,7 +7,7 @@
 # No build step and no runtime dependencies: Bun serves the TypeScript
 # directly and bundles web/ (an HTML import) when the server starts.
 
-FROM oven/bun:1.4.2-slim
+FROM oven/bun:1.4.4-slim
 
 WORKDIR /app
 ENV NODE_ENV=production \
